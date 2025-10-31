@@ -1,0 +1,376 @@
+<?php
+// dashboard.php
+// Simple Sales Dashboard (Chart.js + Bootstrap) using mysqli (no PDO)
+// *** ADDED: Start session to use $_SESSION variables
+session_start();
+
+// ตั้งค่าการเชื่อมต่อฐานข้อมูล
+$DB_HOST = 'localhost';
+$DB_USER = 's67160158';
+$DB_PASS = '6v15Gmy3';
+$DB_NAME = 's67160158';
+
+$mysqli = new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME);
+if ($mysqli->connect_errno) {
+  http_response_code(500);
+  die('Database connection failed: ' . $mysqli->connect_error);
+}
+$mysqli->set_charset('utf8mb4');
+
+function fetch_all($mysqli, $sql) {
+  $res = $mysqli->query($sql);
+  if (!$res) { return []; }
+  $rows = [];
+  while ($row = $res->fetch_assoc()) { $rows[] = $row; }
+  $res->free();
+  return $rows;
+}
+
+// เตรียมข้อมูลสำหรับกราฟต่าง ๆ
+$monthly = fetch_all($mysqli, "SELECT ym, net_sales FROM v_monthly_sales");
+$category = fetch_all($mysqli, "SELECT category, net_sales FROM v_sales_by_category");
+$region = fetch_all($mysqli, "SELECT region, net_sales FROM v_sales_by_region");
+$topProducts = fetch_all($mysqli, "SELECT product_name, qty_sold, net_sales FROM v_top_products");
+$payment = fetch_all($mysqli, "SELECT payment_method, net_sales FROM v_payment_share");
+$hourly = fetch_all($mysqli, "SELECT hour_of_day, net_sales FROM v_hourly_sales");
+$newReturning = fetch_all($mysqli, "SELECT date_key, new_customer_sales, returning_sales FROM v_new_vs_returning ORDER BY date_key");
+$kpis = fetch_all($mysqli, "
+  SELECT
+    (SELECT SUM(net_amount) FROM fact_sales WHERE date_key >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)) AS sales_30d,
+    (SELECT SUM(quantity)   FROM fact_sales WHERE date_key >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)) AS qty_30d,
+    (SELECT COUNT(DISTINCT customer_id) FROM fact_sales WHERE date_key >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)) AS buyers_30d
+");
+$kpi = $kpis ? $kpis[0] : ['sales_30d'=>0,'qty_30d'=>0,'buyers_30d'=>0];
+
+// Helper for number format
+function nf($n) { return number_format((float)$n, 2); }
+?>
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retail DW Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    /* Use Bootstrap's light background color for a professional feel */
+    body {
+      background-color: #f8f9fa;
+    }
+    /* Use Bootstrap's standard card shadow for consistency */
+    .card {
+      box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, .075);
+      border: 1px solid #dee2e6;
+      border-radius: 0.5rem; /* Softer rounded corners */
+    }
+    .kpi-card .card-body {
+      padding: 1.25rem;
+    }
+    .kpi-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #6c757d; /* Muted text color */
+      text-transform: uppercase;
+      margin-bottom: 0.5rem;
+    }
+    .kpi-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #212529;
+    }
+    .chart-card {
+      height: 400px; /* Give charts a consistent height */
+    }
+    .chart-card canvas {
+      max-height: 100%;
+    }
+    .header-bar {
+      border-bottom: 1px solid #dee2e6;
+      padding-bottom: 1rem;
+      background-color: #ffffff;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, .075);
+    }
+  </style>
+</head>
+<body class="p-3 p-md-4">
+
+  <div class="container-fluid">
+
+    <!-- Header: Replaced the old navbar with a cleaner header bar -->
+    <div class="d-flex flex-column flex-md-row align-items-center justify-content-between mb-4 header-bar">
+      <div>
+        <h2 class="h4 mb-1 fw-bold">ยอดขาย (Retail DW) — Dashboard</h2>
+        <span class="text-muted small">แหล่งข้อมูล: MySQL (mysqli)</span>
+      </div>
+      <div class="d-flex align-items-center gap-3 mt-3 mt-md-0">
+        <!-- Added null check for session user -->
+        <span class="text-muted small">สวัสดี, <?php echo htmlspecialchars($_SESSION['user_name'] ?? 'Guest'); ?></span>
+        <a class="btn btn-outline-secondary btn-sm" href="logout.php">Logout</a>
+      </div>
+    </div>
+
+    <!-- KPI: Switched to Bootstrap grid (row/col) -->
+    <div class="row mb-3">
+      <div class="col-lg-4 col-md-6 mb-4">
+        <div class="card kpi-card">
+          <div class="card-body">
+            <h5 class="kpi-title">ยอดขาย 30 วัน</h5>
+            <div class="kpi-value">฿<?= nf($kpi['sales_30d']) ?></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4 col-md-6 mb-4">
+        <div class="card kpi-card">
+          <div class="card-body">
+            <h5 class="kpi-title">จำนวนชิ้นขาย 30 วัน</h5>
+            <div class="kpi-value"><?= number_format((int)$kpi['qty_30d']) ?> ชิ้น</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4 col-md-12 mb-4"> <!-- Full width on medium if it's the 3rd item -->
+        <div class="card kpi-card">
+          <div class="card-body">
+            <h5 class="kpi-title">จำนวนผู้ซื้อ 30 วัน</h5>
+            <div class="kpi-value"><?= number_format((int)$kpi['buyers_30d']) ?> คน</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts grid: Switched to Bootstrap grid (row/col) -->
+    <div class="row">
+
+      <div class="col-lg-8 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">ยอดขายรายเดือน (2 ปี)</h5>
+            <canvas id="chartMonthly"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-4 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">สัดส่วนยอดขายตามหมวด</h5>
+            <canvas id="chartCategory"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-6 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">Top 10 สินค้าขายดี (ตามจำนวน)</h5>
+            <canvas id="chartTopProducts"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-6 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">ยอดขายตามภูมิภาค</h5>
+            <canvas id="chartRegion"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-6 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">วิธีการชำระเงิน</h5>
+            <canvas id="chartPayment"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-6 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">ยอดขายรายชั่วโมง</h5>
+            <canvas id="chartHourly"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 mb-4">
+        <div class="card">
+          <div class="card-body chart-card">
+            <h5 class="card-title mb-3">ลูกค้าใหม่ vs ลูกค้าเดิม (รายวัน)</h5>
+            <canvas id="chartNewReturning"></canvas>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+// --- Chart.js Global Settings ---
+// Set default font for a more professional look
+Chart.defaults.font.family = "'Helvetica Neue', 'Helvetica', 'Arial', sans-serif";
+Chart.defaults.plugins.legend.position = 'bottom';
+Chart.defaults.responsive = true;
+Chart.defaults.maintainAspectRatio = false; // Important for responsive chart cards
+
+// Professional color palettes
+const BColors = [
+  '#0d6efd', '#6c757d', '#198754', '#dc3545', '#ffc107', '#0dcaf0', '#212529'
+];
+const BColorsBg = [
+  'rgba(13, 110, 253, 0.7)', 'rgba(108, 117, 125, 0.7)', 'rgba(25, 135, 84, 0.7)',
+  'rgba(220, 53, 69, 0.7)', 'rgba(255, 193, 7, 0.7)', 'rgba(13, 202, 240, 0.7)',
+  'rgba(33, 37, 41, 0.7)'
+];
+
+// เตรียมข้อมูลจาก PHP -> JS
+const monthly = <?= json_encode($monthly, JSON_UNESCAPED_UNICODE) ?>;
+const category = <?= json_encode($category, JSON_UNESCAPED_UNICODE) ?>;
+const region = <?= json_encode($region, JSON_UNESCAPED_UNICODE) ?>;
+const topProducts = <?= json_encode($topProducts, JSON_UNESCAPED_UNICODE) ?>;
+const payment = <?= json_encode($payment, JSON_UNESCAPED_UNICODE) ?>;
+const hourly = <?= json_encode($hourly, JSON_UNESCAPED_UNICODE) ?>;
+const newReturning = <?= json_encode($newReturning, JSON_UNESCAPED_UNICODE) ?>;
+
+// Utility: pick labels & values
+const toXY = (arr, x, y) => ({ labels: arr.map(o => o[x]), values: arr.map(o => parseFloat(o[y])) });
+
+// Monthly
+(() => {
+  const {labels, values} = toXY(monthly, 'ym', 'net_sales');
+  new Chart(document.getElementById('chartMonthly'), {
+    type: 'line',
+    data: { labels, datasets: [{
+      label: 'ยอดขาย (฿)',
+      data: values,
+      tension: .25,
+      fill: true, // Make it an area chart
+      backgroundColor: 'rgba(13, 110, 253, 0.1)',
+      borderColor: 'rgba(13, 110, 253, 1)',
+      pointBackgroundColor: 'rgba(13, 110, 253, 1)'
+    }] },
+    options: { plugins: { legend: { display: false } } } // Hide legend for single dataset
+  });
+})();
+
+// Category
+(() => {
+  const {labels, values} = toXY(category, 'category', 'net_sales');
+  new Chart(document.getElementById('chartCategory'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: values, backgroundColor: BColorsBg }] }
+    // Options will use global defaults (legend at bottom)
+  });
+})();
+
+// Top products
+(() => {
+  const labels = topProducts.map(o => o.product_name);
+  const qty = topProducts.map(o => parseInt(o.qty_sold));
+  new Chart(document.getElementById('chartTopProducts'), {
+    type: 'bar',
+    data: { labels, datasets: [{
+      label: 'ชิ้นที่ขาย',
+      data: qty,
+      backgroundColor: 'rgba(25, 135, 84, 0.7)', // Green
+      borderColor: 'rgba(25, 135, 84, 1)',
+      borderWidth: 1
+    }] },
+    options: {
+      indexAxis: 'y', // Keep as horizontal bar chart
+      plugins: { legend: { display: false } }
+    }
+  });
+})();
+
+// Region
+(() => {
+  const {labels, values} = toXY(region, 'region', 'net_sales');
+  new Chart(document.getElementById('chartRegion'), {
+    type: 'bar',
+    data: { labels, datasets: [{
+      label: 'ยอดขาย (฿)',
+      data: values,
+      backgroundColor: 'rgba(108, 117, 125, 0.7)', // Grey
+      borderColor: 'rgba(108, 117, 125, 1)',
+      borderWidth: 1
+    }] },
+    options: { plugins: { legend: { display: false } } }
+  });
+})();
+
+// Payment
+(() => {
+  const {labels, values} = toXY(payment, 'payment_method', 'net_sales');
+  new Chart(document.getElementById('chartPayment'), {
+    type: 'pie',
+    data: { labels, datasets: [{
+      data: values,
+      backgroundColor: [ // Different palette
+        'rgba(13, 202, 240, 0.7)',
+        'rgba(255, 193, 7, 0.7)',
+        'rgba(220, 53, 69, 0.7)',
+        'rgba(108, 117, 125, 0.7)'
+      ]
+    }] }
+  });
+})();
+
+// Hourly
+(() => {
+  const {labels, values} = toXY(hourly, 'hour_of_day', 'net_sales');
+  new Chart(document.getElementById('chartHourly'), {
+    type: 'bar',
+    data: { labels, datasets: [{
+      label: 'ยอดขาย (฿)',
+      data: values,
+      backgroundColor: 'rgba(23, 162, 184, 0.7)', // Teal (from Bootstrap info)
+      borderColor: 'rgba(23, 162, 184, 1)',
+      borderWidth: 1
+    }] },
+    options: { plugins: { legend: { display: false } } }
+  });
+})();
+
+// New vs Returning
+(() => {
+  const labels = newReturning.map(o => o.date_key);
+  const newC = newReturning.map(o => parseFloat(o.new_customer_sales));
+  const retC = newReturning.map(o => parseFloat(o.returning_sales));
+  new Chart(document.getElementById('chartNewReturning'), {
+    type: 'line',
+    data: { labels,
+      datasets: [
+        {
+          label: 'ลูกค้าใหม่ (฿)',
+          data: newC,
+          tension: .25,
+          fill: true,
+          backgroundColor: 'rgba(13, 202, 240, 0.1)', // Info
+          borderColor: 'rgba(13, 202, 240, 1)'
+        },
+        {
+          label: 'ลูกค้าเดิม (฿)',
+          data: retC,
+          tension: .25,
+          fill: true,
+          backgroundColor: 'rgba(13, 110, 253, 0.1)', // Primary
+          borderColor: 'rgba(13, 110, 253, 1)'
+        }
+      ]
+    },
+    options: {
+      scales: {
+        x: { ticks: { maxTicksLimit: 12 } } // Limit X-axis labels
+      }
+    }
+  });
+})();
+</script>
+
+</body>
+</html>
